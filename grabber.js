@@ -1,29 +1,21 @@
 var fs = require('fs');
-var propertiesArray = fs.read('/home/civiweb-rss/civiweb.properties').split('\n');
 var properties = [];
 var jobs = [];
+var rootUrl = 'https://www.civiweb.com/';
 
-while (propertiesArray.length) {
-	var propertyData = propertiesArray.pop().split('=');
-	properties[propertyData[0]] = propertyData[1];
-}
+loadPropertiesFile('/home/civiweb-rss/civiweb.properties');
 
-var fields = {
-	'ctl00$ContentPlaceHolderHeader$ctl00$m_txtUser' : properties['username'],
-	'ctl00$ContentPlaceHolderHeader$ctl00$m_txtPass' : properties['password']
-};
-
-var fieldStrings = [];
-for (var i in fields) {
-	fieldStrings.push(i+'='+fields[i]);
-}
+var loginFields = [
+	{ name: 'ctl00$ContentPlaceHolderHeader$ctl00$m_txtUser', value: properties['username']},
+	{ name: 'ctl00$ContentPlaceHolderHeader$ctl00$m_txtPass', value: properties['password']}
+];
 
 var page = require('webpage').create(),
-	server = 'https://www.civiweb.com/FR/index.aspx';
+	server = rootUrl+'/FR/index.aspx';
 
 page.open(server, 'post', '', function (status) {
 	if (status !== 'success') {
-		console.log('Unable to post!');
+		console.log('Unable to login!');
 	} else {
 		login();
 	}
@@ -31,29 +23,41 @@ page.open(server, 'post', '', function (status) {
 
 function login() {
 	page.onLoadFinished = function(){
-		console.log('Logged in.');
-		gotoJobList(1);
+		var hasLoggedIn = page.evaluate(function() {
+			return !$('#ContentPlaceHolderHeader_ctl00_m_errorP.incorrect').length;
+		});
 		page.onLoadFinished = function() {};
+
+		if (hasLoggedIn) {
+			console.log('Logged in.');
+			gotoJobList(1);
+		}
+		else {
+			console.log('Wrong credentials or page structure has changed, exiting.');
+			phantom.exit();
+		}
 	};
-	page.evaluate(function(fields) {
-		for (var fieldName in fields) {
-			$('[name="'+fieldName+'"]').val(fields[fieldName]);
+
+	page.evaluate(function(loginFields) {
+		while (loginFields.length) {
+			var field = loginFields.pop();
+			$('[name="'+field.name+'"]').val(field.value);
 		}
 		$('#ContentPlaceHolderHeader_ctl00_m_lnkBtnCheckUser').trigger('click');
-	}, fields);
+	}, loginFields);
 	console.log('Logging in...');
 }
 
 function gotoJobList(pageNumber) {
 	console.log('Fetching the job list : page '+pageNumber+'...');
-	page.open('https://www.civiweb.com/FR/mon-espace-perso/mes-offres/ma-liste-perso/Page/'+pageNumber+'.aspx', 'get', '', function (status) {
+	page.open(rootUrl+'/FR/mon-espace-perso/mes-offres/ma-liste-perso/Page/'+pageNumber+'.aspx', 'get', '', function (status) {
 		if (status !== 'success') {
 			console.log('Unable to get page '+pageNumber);
 		} else {
 			jobs = jobs.concat(page.evaluate(function() {
 				var regexPublished = /^.* ([0-9]+)\/([0-9]+)\/([0-9]+)$/;
 
-				var jobs = [];debugger;
+				var jobs = [];
 				$.each($('h2'), function() {
 					var link = $(this).find('a');
 					var linkUrl = link.attr('href');
@@ -78,8 +82,8 @@ function gotoJobList(pageNumber) {
 			}
 			else {
 				console.log('No more pages, building RSS feed...');
-				fs.write('/var/www/ci/civiweb-rss/jobs.json', JSON.stringify(jobs), 'w');
-				fs.write('/var/www/ci/civiweb-rss/feed.xml', buildRss(), 'w');
+				fs.write('jobs.json', JSON.stringify(jobs), 'w');
+				fs.write('feed.xml', buildRss(), 'w');
 				console.log('Done.');
 				phantom.exit();
 			}
@@ -88,20 +92,21 @@ function gotoJobList(pageNumber) {
 }
 
 function buildRss() {
-	var rss = '<?xml version="1.0" encoding="UTF-8" ?>\n<rss version="2.0">';
-	rss += '<channel><title>Civiweb</title><link>https://www.civiweb.com</link><description>Civiweb jobs</description>';
+	var rss =
+		'<?xml version="1.0" encoding="UTF-8" ?>\n<rss version="2.0">'
+		+ '<channel>'
+			+ '<title>Civiweb</title>'
+			+ '<link>https://www.civiweb.com</link>'
+			+ '<description>Civiweb jobs</description>';
 
 	while (jobs.length) {
 		var job = jobs.shift();
-		var jobRss =
-			'<item>'
-		  + '<title><![CDATA[' + job.jobTitle + ']]></title>'
-		  + '<description><![CDATA[' + job.jobDescription + ']]></description>'
-		  + '<link>https://www.civiweb.com' + job.jobLink + '</link>'
-		  + '<pubDate>' + job.jobPublicationDate.toUTCString() + '</pubDate>'
-		  +'</item>';
-
-		rss += jobRss;
+		rss += '<item>'
+					+ '<title><![CDATA[' + job.jobTitle + ']]></title>'
+					+ '<description><![CDATA[' + job.jobDescription + ']]></description>'
+					+ '<link>https://www.civiweb.com' + job.jobLink + '</link>'
+					+ '<pubDate>' + job.jobPublicationDate.toUTCString() + '</pubDate>'
+				+ '</item>';
 	}
 
 	rss += '</channel></rss>';
@@ -110,40 +115,10 @@ function buildRss() {
 	return rss;
 }
 
-/**
- * Wait until the test condition is true or a timeout occurs. Useful for waiting
- * on a server response or for a ui change (fadeIn, etc.) to occur.
- *
- * @param testFx javascript condition that evaluates to a boolean,
- * it can be passed in as a string (e.g.: "1 == 1" or "$('#bar').is(':visible')" or
- * as a callback function.
- * @param onReady what to do when testFx condition is fulfilled,
- * it can be passed in as a string (e.g.: "1 == 1" or "$('#bar').is(':visible')" or
- * as a callback function.
- * @param timeOutMillis the max amount of time to wait. If not specified, 3 sec is used.
- */
-function waitFor(testFx, onReady, timeOutMillis) {
-
-	var maxtimeOutMillis = timeOutMillis ? timeOutMillis : 3000, //< Default Max Timout is 3s
-		start = new Date().getTime(),
-		condition = false;
-	var a = setInterval(function() {
-		if ( (new Date().getTime() - start < maxtimeOutMillis) && !condition ) {
-			// If not time-out yet and condition not yet fulfilled
-			console.log('check = false aa='+a);
-			condition = (typeof(testFx) === "string" ? eval(testFx) : testFx()); //< defensive code
-		} else {
-			if(!condition) {
-				// If condition still not fulfilled (timeout but condition is 'false')
-				console.log("'waitFor()' timeout");
-				phantom.exit(1);
-			} else {
-				// Condition fulfilled (timeout and/or condition is 'true')
-				console.log("'waitFor()' finished in " + (new Date().getTime() - start) + "ms.");
-				clearInterval(a); //< Stop this interval
-				a = undefined;
-				typeof(onReady) === "string" ? eval(onReady) : onReady(); //< Do what it's supposed to do once the condition is fulfilled
-			}
-		}
-	}, 250); //< repeat check every 250ms
+function loadPropertiesFile(propertiesFile) {
+	var propertiesArray = fs.read(propertiesFile).split('\n');
+	while (propertiesArray.length) {
+		var propertyData = propertiesArray.pop().split('=');
+		properties[propertyData[0]] = propertyData[1];
+	}
 }
